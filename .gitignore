@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 取得した音源（リポジトリはソースのみ想定）
+*.mp3
+*.mp4
+*.wav
+*.m4a
+
+# エディタ・OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ローカル同期調整（任意でコミットしたい場合は .gitignore から外す）
+sync.json

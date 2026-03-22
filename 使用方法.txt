@@ -1,0 +1,94 @@
+YouTube音ゲー（youtubeotoge）— 使用方法
+========================================
+
+■ 必要なもの
+  - Python 3.10 以降を推奨
+  - 音源をダウンロードする場合: ffmpeg（PATH に通していること）
+    yt-dlp が mp3 に変換するときに ffmpeg を使います。
+
+■ セットアップ（初回のみ）
+  1. コマンドプロンプトまたは PowerShell を開く
+  2. このフォルダに移動する
+     例: cd d:\Users\kusak\python\youtubeotoge
+  3. 依存パッケージを入れる
+     pip install -r requirements.txt
+
+■ 音源（music.mp3）の用意（任意）
+  ゲームは music.mp3 が無くても起動しますが、無音で内部タイマーのみ進みます。
+  YouTube から取り込む場合:
+  1. ffmpeg をインストールし、PATH を通す
+  2. 同じフォルダで次を実行する
+     python mp3download.py
+  3. 完了すると、このフォルダに music.mp3 ができます
+  （URL は mp3download.py 内の URL を書き換えれば変更できます）
+
+■ ゲームの起動
+  このフォルダで:
+    python youtubeotoge.py
+  起動後はスタート画面が出ます。「スタート」をクリックするか Space / Enter で
+  その瞬間に BGM・譜面のタイマー・既定ブラウザの YouTube がまとめて開始します。
+  （同じフォルダの *.url に YouTube リンクがあればそれを開き、無ければ仕様どおりの URL）
+
+■ 操作
+  - D, F, J, K … 上から順にレーン 0〜3 のキー（スタート後）
+  - ESC … 終了
+  - ノーツは左から右へ流れ、右側の赤い線が判定ラインです
+
+■ 譜面（chart.json）
+  同じフォルダの chart.json を編集してノーツを変えられます。
+  形式は JSON の配列で、1 要素が 1 ノーツです。
+  例:
+    { "time": 1.0, "lane": 0 }
+  - time … 曲開始から何秒で判定線に来るか（秒）
+  - lane … 0〜3（上から D,F,J,K に対応）
+
+■ 音源から譜面を自動生成
+  music.mp3 を用意したうえで、同じフォルダで次のどちらかで chart.json を再生成できます。
+    python regenerate_chart.py
+    python generate_chart_from_audio.py
+  音源を明示するとき:
+    python regenerate_chart.py --audio music.mp3
+  （regenerate_chart.py は generate_chart_from_audio.py を呼び出すだけのラッパーです）
+
+  直接スクリプトを使う場合の例:
+    python generate_chart_from_audio.py
+  既定（--placement bpm_volume）では:
+  - 推定 BPM から「拍の整数倍」の秒幅を決め、--min-gap（既定0.5）〜--max-gap（既定3）
+    の範囲に収めたグリッドで曲を区切る
+  - 各区間に必ず 1 ノーツ。区間内ではオンセット強度（音量の立ち上がり）が最大の時刻に置く
+  - 区間の開始は beat_track のダウンビート付近に合わせる
+  - 曲の長さ全体を対象にし、最後のノーツが曲終端付近まで来るよう末尾も補間する
+  - 先頭・末尾の無音は librosa の trim で解析し、時刻は元ファイル上の秒数に直す
+  - 隣り合うノーツが詰まったときはオンセットが強い方を残す（最低間隔 min-gap）
+  従来の「オンセットだけ」モード:
+    python regenerate_chart.py --placement onset
+  レーンは乱数（同じ並びにしたいときは --seed を指定）
+  例:
+    python generate_chart_from_audio.py --audio music.mp3 --out chart.json --seed 42
+  先頭無音を切らずに解析したいとき:
+    python generate_chart_from_audio.py --no-trim
+
+  ノーツ本数について:
+  - 既定の bpm_volume は 曲長 ÷ スロット幅 前後（スロット幅は BPM と min/max-gap から決まる）
+  - --placement onset は「音の立ち上がり」の数だけなので 1 曲 1 個になり得ます
+  - 曲全体をだいたい一定間隔で埋めたいとき:
+      python regenerate_chart.py --placement interval
+    0.5〜3秒の一様乱数のため、期待本数は 曲長÷1.75秒 前後（3分半なら約120個）。
+  - 約200個に近づけたいとき（例: 211秒÷200≈1.055）:
+      python regenerate_chart.py --placement interval --note-step 1.055
+
+■ 再生と譜面のズレ（sync.json）
+  ゲーム側は MP3 再生開始直後の時計でノーツと同期します（get_pos の不具合対策）。
+  まだ音より早い／遅いときは、同じフォルダに sync.json を置きます。
+  例（音より少し遅れて聞こえる＝ノーツを遅らせたいときは負の値）:
+    {"time_offset_sec": -0.25}
+
+■ トラブル時
+  - pygame が無い / エラーになる → pip install -r requirements.txt を再実行
+  - mp3download で失敗する → ffmpeg が入っているか、インターネット接続を確認
+  - generate_chart_from_audio で失敗する → librosa は ffmpeg や soundfile 経由で
+    mp3 を読むことがあります。ffmpeg の導入を確認してください。
+  - librosa.feature.rhythm が無い → pip install -U "librosa>=0.10" するか、
+    スクリプトは古い librosa では librosa.beat.tempo に自動で切り替えます。
+  - 音とノーツのズレ → sync.json の time_offset_sec で調整するか、
+    譜面の time を全体でずらしてください
