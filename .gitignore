@@ -29,6 +29,9 @@ Desktop.ini
 # ローカル同期調整（任意でコミットしたい場合は .gitignore から外す）
 sync.json
 
+# 音声解析の実行中スナップショット（アプリが上書き）
+live_audio_reactive.json
+
 # よくあるローカル生成物
 .env
 .envrc
