@@ -3,32 +3,46 @@ YouTube音ゲー（youtubeotoge）— 使用方法
 
 ■ 概要
   youtubeotoge.py は、ブラウザの YouTube の上に半透明ウィンドウを重ねて遊ぶ想定の
-  リズムゲームです。MP3 は再生しません。PC の音声入力（できればスピーカー・ループバック）
-  から音量とリズムを読み取り、ノーツが自動で出ます。
+  リズムゲームです。音源は PC の音声入力で取り込んだ「再生中の YouTube」（ループバック
+  等）のみです。ローカル MP3 の再生や chart.json による譜面読込はありません。
+
+  ノーツのレーンは、ループバック波形を周波数帯に分けたときの最強帯で決まります。
+  ・0〜250 Hz → レーン0（キック・青） ・250〜1500 Hz → レーン1（スネア・黄）
+  ・1500〜5000 Hz → レーン2（黄橙） ・5000 Hz〜 → レーン3（ハイハット・赤）
+  （frequency_lanes.py / youtube_audio_capture.py）
 
 ■ 必要なもの
   - Python 3.10 以降を推奨
   - pip install -r requirements.txt
-  - ゲームでブラウザの音を取り込む場合:
+  - ブラウザの音を取り込む場合:
       Windows なら「○○ (Loopback)」「ステレオ ミックス」等の録音デバイス、
       または仮想オーディオケーブルなど（環境により異なります）
-  - オフラインで chart.json を作る場合: ffmpeg（PATH 通し）※ mp3download / librosa 用
 
 ■ セットアップ
   1. コマンドプロンプトまたは PowerShell を開く
   2. プロジェクトフォルダへ移動
      例: cd d:\Users\kusak\python\youtubeotoge
   3. pip install -r requirements.txt
-  4. ゲームでノーツが出ないとき、コンソールに「sounddevice 未インストール」と出る場合は:
+  4. 開きたい動画の URL:
+     - 複数（最大10）をタイトルで選ぶ: youtube_urls.example.txt をコピーして
+       youtube_urls.txt にし、http で始まる行を並べる。起動後 1〜9・0（10番目）またはクリックで選択し、スタートでブラウザが開く。
+     - 1 本だけ: youtube_url.txt を新規作成し、http で始まる URL を 1 行（例は youtube_urls.example.txt 冒頭）
+     - または *.url をフォルダに置く
+     優先順は youtube_urls.txt → youtube_url.txt → *.url → 既定
+  5. ゲームでノーツが出ないとき、コンソールに「sounddevice 未インストール」と出る場合は:
         pip install sounddevice
-     （requirements.txt に含まれていますが、古い環境では未導入のことがあります）
 
 ■ メインの遊び方（youtubeotoge.py）
   1. python youtubeotoge.py
-  2. 「スタート」または Space / Enter
+  2. 右のリストで動画を選ぶ（↑↓キー、または 1〜0・クリック）。左にサムネイルとタイトル（YouTube 取得・要ネット）
+  3. 「スタート」または Space / Enter
      → ブラウザで YouTube が開き、音声キャプチャが始まる
-  3. ウィンドウを動画の上に重ねる（Windows では窓ごと透過の場合あり）
-  4. D F J K でノーツを取る。ESC で終了
+  4. ウィンドウを動画の上に重ねる（Windows では窓ごと透過の場合あり）
+  5. D F J K でノーツを取る。ESC で終了
+
+  画面左上:
+  - Score / Combo の下に 4 本のスペクトラム（レーン 0〜3 の帯域）。高いほど明るい色
+  - その帯域が強いと同レーンにノーツが出やすい
 
   画面右上の表示:
   - RMS / RMS~ … 取り込み音量とその平滑化
@@ -43,35 +57,17 @@ YouTube音ゲー（youtubeotoge）— 使用方法
   調整:
   - youtubeotoge.py 内の WINDOW_ALPHA（0〜255）… ウィンドウの不透明度（Windows）
   - sync.json 例: {"time_offset_sec": -0.2} … ゲーム内時刻の微調整
-
-■ 音源ファイルの取得（オプション・譜面ツール用）
-  ゲーム本体は music.mp3 を使いません。chart 自動生成や独自の mp3 解析用に使います。
-    python mp3download.py
-  ffmpeg が PATH に必要です。URL は mp3download.py 内で変更可能です。
-
-■ オフラインで chart.json を作る（generate_chart_from_audio）
-  music.mp3 等を用意したうえで:
-    python regenerate_chart.py
-    または
-    python generate_chart_from_audio.py
-
-  よく使う引数:
-    --audio music.mp3
-    --out chart.json
-    --seed 42
-    --placement bpm_volume | onset | interval
-    --note-step 1.055   （interval 時、固定秒間隔でだいたい本数を合わせる例）
-    --no-trim           先頭無音トリムを切る
-
-  regenerate_chart.py は上記スクリプトを呼び出すラッパーです。
+  - display_settings.json … ゲーム中の右上メトリクス用フォント（例は display_settings.example.json）
+  - 音声入力を番号で指定 … python list_audio_devices.py で Index を確認し、
+    audio_settings.json に {"input_device_index": 番号}（例: audio_settings.example.json）
 
 ■ 同梱ファイルの役割（参考）
   youtubeotoge.py           … ゲーム本体
-  youtube_audio_capture.py … 音声入力・解析・JSON 出力
-  generate_chart_from_audio.py … ファイルから譜面 JSON 生成
-  regenerate_chart.py      … 上記のラッパー
-  mp3download.py           … YouTube から mp3 取得
-  chart.json               … 譜面サンプル（ゲーム実行には不要）
+  youtube_preview.py        … タイトル画面用 YouTube oEmbed / サムネ取得
+  youtube_urls.example.txt  … URL 設定の雛形（複数は → youtube_urls.txt、1 本だけは → youtube_url.txt）
+  youtube_audio_capture.py … ループバック音声・解析・ノーツキュー・JSON 出力
+  frequency_lanes.py         … 周波数帯→レーン・色・ラベル
+  list_audio_devices.py     … 入力デバイス一覧（audio_settings 用）
   youtube_otoge_spec.txt   … 仕様書
   使用方法.txt             … 本ファイル
 
@@ -79,7 +75,6 @@ YouTube音ゲー（youtubeotoge）— 使用方法
   - ノーツがほとんど出ない … ループバックではなくマイクになっている可能性。
     録音デバイスを確認する。
   - sounddevice / pygame の ImportError … pip install -r requirements.txt
-  - generate_chart_from_audio が落ちる … librosa / ffmpeg、trim の戻り値対応を確認
   - 音と表示のズレ … sync.json の time_offset_sec を調整
 
 ■ 仕様の詳細

@@ -3,17 +3,35 @@ YouTube音ゲー（Python版）仕様書
 
 ■ 概要
   ブラウザで YouTube を再生し、別ウィンドウでリズムゲーム用のオーバーレイを表示する。
-  本ゲーム本体は MP3 を再生しない。PC が取り込む再生音声（ループバック等）から
-  音量・リズム（オンセット）を解析し、ノーツを自動生成する。
+  音源は PC が取り込む再生音声（ループバック・ステレオミックス等）のみ。ローカル MP3 の
+  再生やファイル譜面（chart.json）の読込は行わない。
+  音量・オンセットからノーツ時刻を推定し、ループバック波形の周波数帯でレーン 0〜3 を割当。
   ウィンドウ・ステージ・ノーツは半透明とし、背後の YouTube 映像を妨げにくくする。
 
-  当面の対象動画例:
-  【LIVE映像】結束バンド「あのバンド」LIVE at STARRY / 「ぼっち・ざ・ろっく！」劇中曲
-  https://www.youtube.com/watch?v=5tc14WHUoMw&list=RD5tc14WHUoMw&start_radio=1
-  同フォルダの *.url（Internet ショートカット）があればその URL をスタート時に開く。
+  再生 URL の読み込み優先順:
+  1. youtube_urls.txt … 最大 10 行の http URL（タイトルで 1〜9・0=10 から選択）
+  2. youtube_url.txt … 単一 URL（候補が 1 件だけになる）
+  3. *.url（Internet ショートカット）を順に最大 10 件まで
+  4. コード内の既定 URL
+  雛形: youtube_urls.example.txt（単一 URL は同ファイル冒頭の説明のとおり youtube_url.txt）
+  ・タイトル画面で URL を選ぶと YouTube oEmbed でタイトル・サムネを取得し表示（要ネットワーク）
+  ・起動画面は ↑↓ でリスト選択（1〜0 直接指定・クリックも可）。UI は TITLE_SCREEN_UI_SCALE で一括縮小
+
+■ レーン割当（ループバック各ブロックの rFFT・帯域エネルギー最大）
+  ・0〜250 Hz      → レーン 0（キック・青系）
+  ・250〜1500 Hz   → レーン 1（スネア・黄）
+  ・1500〜5000 Hz  → レーン 2（スネア・オレンジ寄り）
+  ・5000 Hz〜      → レーン 3（ハイハット・赤系）
+  実装: frequency_lanes.py（youtube_audio_capture が参照）
+
+■ ノーツ生成（解析側）
+  ・オンセット: 従来の立ち上がり検出。RMS が高いほど最小間隔を短くしサビで増える
+  ・帯域: 正規化スペクトルが閾値を超えたレーンにノーツ（左上 4 本のバーと対応）
+  ・RMS 追加: RMS > 約 0.02 で別系統のパルス間隔を詰めて追加ノーツ
+  ・1 ブロックあたりの生成数に上限（静か時少／RMS 高いとき多め）
 
 ■ 画面・入力
-  ・解像度: 800×600
+  ・解像度: 800×600 基準×DISPLAY_SCALE
   ・レーン数: 4
   ・キー: D, F, J, K（上からレーン 0〜3）
   ・ESC: 終了
@@ -25,8 +43,8 @@ YouTube音ゲー（Python版）仕様書
 ■ ゲームフロー
   1. タイトル画面で「スタート」（クリック / Space / Enter）
   2. 同一タイミングで既定ブラウザが YouTube を開く
-  3. 音声入力ストリームの解析を開始（sounddevice）
-  4. オンセット検出に応じてノーツを生成（レーンは乱数）
+  3. 音声入力ストリームの解析を開始（sounddevice・ループバック推奨）
+  4. オンセット検出に応じてノーツ生成（レーンは上記周波数帯）
   5. ノーツが奥から手前へ近づく
   6. キー入力でタイミング判定・スコア・コンボ更新
   7. 解析メトリクスを画面右上に表示し、一定間隔で JSON に書き出し
@@ -47,26 +65,29 @@ YouTube音ゲー（Python版）仕様書
   ・スタート押下を 0 秒とするセッション時間（time.perf_counter 系）
   ・任意で sync.json の time_offset_sec で全体オフセット
 
+■ 表示設定（任意）
+  ・ファイル名: display_settings.json（実行フォルダ＝スクリプトと同じ場所）
+  ・無い場合: ゲーム中の右上メトリクスは小フォント既定（約 18×DISPLAY_SCALE px）
+  ・hud_right_font_px: 右上テキストのフォントサイズ（整数、6〜120 程度を推奨）
+  ・hud_right_line_gap_px: 行間（省略時はフォントの get_linesize() に合わせる）
+  ・雛形: display_settings.example.json をコピーして編集
+
+■ 音声入力デバイス（任意・番号指定）
+  ・ループバック / Stereo Mix が名前判定で取れない場合、デバイス番号で固定できる
+  ・python list_audio_devices.py … Index とデバイス名の一覧を表示
+  ・audio_settings.json … {"input_device_index": 番号}（雛形: audio_settings.example.json）
+  ・指定がある場合は自動ループバック検出より優先。番号が無効ならストリームは開始しない
+
 ■ リアルタイム解析出力（JSON）
   ・ファイル名: live_audio_reactive.json（実行フォルダ）
   ・内容の例: RMS、平滑 RMS、推定 BPM、最後のオンセット強度、生成ノーツイベント履歴
-  ・ゲーム本体のプレイ譜面はこのストリーム由来（chart.json は必須ではない）
-
-■ オフライン譜面生成（別ツール）
-  ・音源ファイル（例: music.mp3）から chart.json を生成するスクリプトあり
-  ・形式: [ {"time": 秒, "lane": 0〜3}, ... ]
-  ・generate_chart_from_audio.py / regenerate_chart.py
-  ・既定配置モード bpm_volume（BPM グリッド + 区間内オンセット最大）、ほか onset / interval
 
 ■ 使用技術（目安）
   ・Python 3.10 以降推奨
   ・pygame（描画・入力）
   ・sounddevice + NumPy（リアルタイム音声入力・解析）
-  ・librosa + NumPy（オフライン譜面生成）
-  ・yt-dlp + ffmpeg（mp3download.py での音源取得）
 
 ■ 今後の拡張（案）
   ・エフェクト強化
   ・スコアランキング
-  ・譜面エディタ
   ・ブラウザ埋め込み再生との直結

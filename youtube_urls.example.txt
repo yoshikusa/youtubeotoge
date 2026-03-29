@@ -1,0 +1,12 @@
+# 最大 10 件。先頭から 1 番〜10 番（テンキーの 0 が 10 番目）。
+# 行頭の「1.」「2)」「3|」は省略可。# でコメント。
+#
+# 使い方:
+#   ・複数をタイトルで選ぶ → このファイルをコピーして youtube_urls.txt にリネームして編集
+#   ・1 本だけ → youtube_url.txt を新規作成し、下記のような http 行を 1 行だけ書く
+#     例: https://www.youtube.com/watch?v=動画ID
+
+1. https://www.youtube.com/watch?v=5tc14WHUoMw&list=RD5tc14WHUoMw&start_radio=1
+# 2. https://www.youtube.com/watch?v=別の動画ID
+3.https://www.youtube.com/watch?v=Xbb9IaqTk9c&list=RDXbb9IaqTk9c&start_radio=1
+4.https://www.youtube.com/watch?v=XicdpSmxuT0&list=RDXbb9IaqTk9c&index=7
