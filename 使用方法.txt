@@ -24,8 +24,8 @@ YouTube音ゲー（youtubeotoge）— 使用方法
      例: cd d:\Users\kusak\python\youtubeotoge
   3. pip install -r requirements.txt
   4. 開きたい動画の URL:
-     - 複数（最大10）をタイトルで選ぶ: youtube_urls.example.txt をコピーして
-       youtube_urls.txt にし、http で始まる行を並べる。起動後 1〜9・0（10番目）またはクリックで選択し、スタートでブラウザが開く。
+     - 複数（最大20件まで）をタイトルで選ぶ: youtube_urls.example.txt をコピーして
+       youtube_urls.txt にし、http で始まる行を並べる。起動後 1〜9・0（10番目）・矢印・▲▼・クリックで選択し、スタートでブラウザが開く。
      - 1 本だけ: youtube_url.txt を新規作成し、http で始まる URL を 1 行（例は youtube_urls.example.txt 冒頭）
      - または *.url をフォルダに置く
      優先順は youtube_urls.txt → youtube_url.txt → *.url → 既定
@@ -39,6 +39,8 @@ YouTube音ゲー（youtubeotoge）— 使用方法
      → ブラウザで YouTube が開き、音声キャプチャが始まる
   4. ウィンドウを動画の上に重ねる（Windows では窓ごと透過の場合あり）
   5. D F J K でノーツを取る。ESC で終了
+     判定文字は各レーンの判定線付近に約 0.5 秒表示される（GOOD / GREAT は任意で効果音:
+     プロジェクト直下に glass1.wav・glass2.wav を置くと GOOD / GREAT・PERFECT で再生。MISS は無音）
 
   画面左上:
   - Score / Combo の下に 4 本のスペクトラム（レーン 0〜3 の帯域）。高いほど明るい色

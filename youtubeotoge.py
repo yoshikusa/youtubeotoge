@@ -93,7 +93,7 @@ def make_ui_fonts() -> tuple[pygame.font.Font, pygame.font.Font, pygame.font.Fon
 
 
 # --- 表示 ---
-WIDTH, HEIGHT = int(800 * DISPLAY_SCALE), int(600 * DISPLAY_SCALE)
+WIDTH, HEIGHT = int(900 * DISPLAY_SCALE), int(600 * DISPLAY_SCALE)
 LANE_COUNT = 4
 FPS = 60
 # --- testRhythmgame 由来の 3D パラメータ ---
@@ -102,9 +102,17 @@ VANISHING_Y = int(round(200 * DISPLAY_SCALE))
 FLOOR_Y = int(round(100 * DISPLAY_SCALE))
 Z_START = 20.0
 Z_END = 0.5
-LANES_X = (-0.6, -0.2, 0.2, 0.6)
+LANES_X_BASE = (-0.6, -0.2, 0.2, 0.6)
+LANES_X = LANES_X_BASE
+LANE_SPREAD_REF = 0.7
 # note_time - now がこの秒数で Z_START→Z_END を移動（大きいほど遠くから長く見える）
 APPROACH_SECONDS = 1.85
+
+
+def lanes_x_from_spread(spread: float) -> tuple[float, float, float, float]:
+    """レーンの世界 x 中心。UI の Lane Spread（既定 0.7）で横幅を調整。"""
+    s = spread / LANE_SPREAD_REF
+    return tuple(x * s for x in LANES_X_BASE)
 
 # 半透明（0-255）。ステージ線・ノーツ本体
 ALPHA_STAGE_LINE = 100
@@ -130,6 +138,12 @@ GOOD_WIN = 0.20
 
 SCORE_TABLE = {"perfect": 100, "great": 70, "good": 50, "miss": 0}
 
+# 判定文字・フラッシュ演出（判定線付近）
+JUDGE_FLOAT_DURATION = 0.5
+JUDGE_RISE_SPEED = 100.0
+FLASH_DECAY_PER_S = 3.0
+JUDGE_FLASH_RING_BASE = 30
+
 # --- ノーツはループバック音声の解析のみ（時刻=オンセット、レーン=周波数帯）---
 SYNC_FILE = "sync.json"
 # 表示オプション（任意）。無い場合は既定値。例: display_settings.example.json
@@ -138,10 +152,26 @@ DISPLAY_SETTINGS_FILE = "display_settings.json"
 DEFAULT_YOUTUBE_URL = (
     "https://www.youtube.com/watch?v=5tc14WHUoMw&list=RD5tc14WHUoMw&start_radio=1"
 )
-# 最大 10 行（先頭の http 行を 1…10 番）。無ければ youtube_url.txt → *.url → 既定
+# 最大 MAX_YOUTUBE_SLOTS 行（先頭の http 行を 1 番から）。無ければ youtube_url.txt → *.url → 既定
+# 数字キー 1〜9・0 は先頭 10 件まで（0=10 番目）。11 件目以降は矢印・▲▼・クリックで選択。
 YOUTUBE_URLS_TXT = "youtube_urls.txt"
 YOUTUBE_URL_TXT = "youtube_url.txt"
-MAX_YOUTUBE_SLOTS = 10
+MAX_YOUTUBE_SLOTS = 20
+# 起動・ゲーム共通の調整（onset_rms_tune.json に保存）
+ONSET_RMS_TUNE_FILE = "onset_rms_tune.json"
+DEFAULT_SENSITIVITY = 0.5
+DEFAULT_LANE_SPREAD = 0.7
+DEFAULT_MIN_VOLUME = 0.0001
+TUNE_SENS_MIN = 0.0
+TUNE_SENS_MAX = 2.0
+TUNE_SENS_STEP = 0.05
+TUNE_SPREAD_MIN = 0.25
+TUNE_SPREAD_MAX = 1.5
+TUNE_SPREAD_STEP = 0.05
+TUNE_VOL_MIN = 0.0
+TUNE_VOL_MAX = 0.2
+TUNE_VOL_STEP = 0.0001  # 通常の ± 刻み
+TUNE_VOL_STEP_SHIFT = 0.001  # Shift 押しながら ± のときの刻み
 
 
 @dataclass
@@ -151,6 +181,9 @@ class Note:
     done: bool = False
     rgb: tuple[int, int, int] | None = None
     label: str = ""
+    judgment: str | None = None
+    judge_time: float = 0.0
+    flash: float = 0.0
 
 
 def _http_urls_from_text(raw: str) -> list[str]:
@@ -170,7 +203,7 @@ def _http_urls_from_text(raw: str) -> list[str]:
 
 
 def load_youtube_url_candidates(root: Path) -> list[str]:
-    """タイトルで 1〜10 から選ぶ候補（1 件以上保証）。"""
+    """タイトルで選ぶ候補（1 件以上保証）。先頭 MAX_YOUTUBE_SLOTS 件まで。"""
     urls: list[str] = []
     multi = root / YOUTUBE_URLS_TXT
     if multi.is_file():
@@ -228,6 +261,252 @@ class TitleScreenLayout:
     sel_down_btn: pygame.Rect
     url_pick_rects: list[tuple[int, pygame.Rect]]
     Tu: float
+
+
+@dataclass(frozen=True)
+class AudioTuneLayout:
+    """TIMING / POSITION / CONTROL の 3 段調整 UI の幾何。"""
+
+    sens_dec: pygame.Rect
+    sens_inc: pygame.Rect
+    spread_dec: pygame.Rect
+    spread_inc: pygame.Rect
+    vol_dec: pygame.Rect
+    vol_inc: pygame.Rect
+    timing_hdr_xy: tuple[int, int]
+    sens_lbl_xy: tuple[int, int]
+    sens_val_xy: tuple[int, int]
+    pos_hdr_xy: tuple[int, int]
+    spread_lbl_xy: tuple[int, int]
+    spread_val_xy: tuple[int, int]
+    ctrl_hdr_xy: tuple[int, int]
+    vol_lbl_xy: tuple[int, int]
+    vol_val_xy: tuple[int, int]
+    panel_back: pygame.Rect
+
+
+def compute_audio_tune_layout(
+    height: int,
+    width: int,
+    display_scale: float,
+    Tu: float,
+    font: pygame.font.Font,
+    sensitivity: float,
+    lane_spread: float,
+    min_volume: float,
+) -> AudioTuneLayout:
+    lm = max(6, int(round(8 * display_scale * Tu)))
+    g = max(4, int(round(6 * display_scale * Tu)))
+    bw = max(22, int(round(26 * display_scale * Tu)))
+    bh = max(20, int(round(24 * display_scale * Tu)))
+    sec_gap = int(round(4 * display_scale * Tu))
+    row_gap = int(round(3 * display_scale * Tu))
+    col_lab = (165, 172, 198)
+    col_val = (245, 246, 252)
+    hdr_c = (125, 135, 168)
+
+    panel_top = height - int(round(252 * display_scale * Tu))
+    y = panel_top
+
+    timing_hdr_xy = (lm, y)
+    y += font.get_linesize() + sec_gap
+
+    lab_s = font.render("[ Sensitivity ]", True, col_lab)
+    vs = font.render(f"{sensitivity:.2f}", True, col_val)
+    sens_lbl_xy = (lm, y + (bh - lab_s.get_height()) // 2)
+    x = lm + lab_s.get_width() + g
+    sens_dec = pygame.Rect(x, y, bw, bh)
+    x = sens_dec.right + g
+    sens_val_xy = (x, y + (bh - vs.get_height()) // 2)
+    x += vs.get_width() + g
+    sens_inc = pygame.Rect(x, y, bw, bh)
+    y += max(bh, lab_s.get_height()) + row_gap
+
+    pos_hdr_xy = (lm, y)
+    y += font.get_linesize() + sec_gap
+
+    lab_sp = font.render("[ Lane Spread ]", True, col_lab)
+    vsp = font.render(f"{lane_spread:.2f}", True, col_val)
+    spread_lbl_xy = (lm, y + (bh - lab_sp.get_height()) // 2)
+    x = lm + lab_sp.get_width() + g
+    spread_dec = pygame.Rect(x, y, bw, bh)
+    x = spread_dec.right + g
+    spread_val_xy = (x, y + (bh - vsp.get_height()) // 2)
+    x += vsp.get_width() + g
+    spread_inc = pygame.Rect(x, y, bw, bh)
+    y += max(bh, lab_sp.get_height()) + row_gap
+
+    ctrl_hdr_xy = (lm, y)
+    y += font.get_linesize() + sec_gap
+
+    lab_v = font.render("[ Min Volume ]", True, col_lab)
+    vv = font.render(f"{min_volume:.4f}", True, col_val)
+    vol_lbl_xy = (lm, y + (bh - lab_v.get_height()) // 2)
+    x = lm + lab_v.get_width() + g
+    vol_dec = pygame.Rect(x, y, bw, bh)
+    x = vol_dec.right + g
+    vol_val_xy = (x, y + (bh - vv.get_height()) // 2)
+    x += vv.get_width() + g
+    vol_inc = pygame.Rect(x, y, bw, bh)
+    y += max(bh, lab_v.get_height())
+
+    max_r = max(sens_inc.right, spread_inc.right, vol_inc.right) + 4
+    panel_back = pygame.Rect(
+        lm - 6,
+        panel_top - 6,
+        min(width - lm + 6, max_r - lm + 12),
+        y - panel_top + 12,
+    )
+
+    return AudioTuneLayout(
+        sens_dec=sens_dec,
+        sens_inc=sens_inc,
+        spread_dec=spread_dec,
+        spread_inc=spread_inc,
+        vol_dec=vol_dec,
+        vol_inc=vol_inc,
+        timing_hdr_xy=timing_hdr_xy,
+        sens_lbl_xy=sens_lbl_xy,
+        sens_val_xy=sens_val_xy,
+        pos_hdr_xy=pos_hdr_xy,
+        spread_lbl_xy=spread_lbl_xy,
+        spread_val_xy=spread_val_xy,
+        ctrl_hdr_xy=ctrl_hdr_xy,
+        vol_lbl_xy=vol_lbl_xy,
+        vol_val_xy=vol_val_xy,
+        panel_back=panel_back,
+    )
+
+
+def apply_audio_tune_click(
+    pos: tuple[int, int],
+    layout: AudioTuneLayout,
+    sensitivity: float,
+    lane_spread: float,
+    min_volume: float,
+    *,
+    min_vol_shift: bool = False,
+) -> tuple[float, float, float, bool]:
+    if layout.sens_dec.collidepoint(pos):
+        return (
+            max(
+                TUNE_SENS_MIN,
+                min(TUNE_SENS_MAX, round(sensitivity - TUNE_SENS_STEP, 3)),
+            ),
+            lane_spread,
+            min_volume,
+            True,
+        )
+    if layout.sens_inc.collidepoint(pos):
+        return (
+            max(
+                TUNE_SENS_MIN,
+                min(TUNE_SENS_MAX, round(sensitivity + TUNE_SENS_STEP, 3)),
+            ),
+            lane_spread,
+            min_volume,
+            True,
+        )
+    if layout.spread_dec.collidepoint(pos):
+        return (
+            sensitivity,
+            max(
+                TUNE_SPREAD_MIN,
+                min(TUNE_SPREAD_MAX, round(lane_spread - TUNE_SPREAD_STEP, 3)),
+            ),
+            min_volume,
+            True,
+        )
+    if layout.spread_inc.collidepoint(pos):
+        return (
+            sensitivity,
+            max(
+                TUNE_SPREAD_MIN,
+                min(TUNE_SPREAD_MAX, round(lane_spread + TUNE_SPREAD_STEP, 3)),
+            ),
+            min_volume,
+            True,
+        )
+    if layout.vol_dec.collidepoint(pos):
+        dv = TUNE_VOL_STEP_SHIFT if min_vol_shift else TUNE_VOL_STEP
+        return (
+            sensitivity,
+            lane_spread,
+            max(
+                TUNE_VOL_MIN,
+                min(TUNE_VOL_MAX, round(min_volume - dv, 6)),
+            ),
+            True,
+        )
+    if layout.vol_inc.collidepoint(pos):
+        dv = TUNE_VOL_STEP_SHIFT if min_vol_shift else TUNE_VOL_STEP
+        return (
+            sensitivity,
+            lane_spread,
+            max(
+                TUNE_VOL_MIN,
+                min(TUNE_VOL_MAX, round(min_volume + dv, 6)),
+            ),
+            True,
+        )
+    return (sensitivity, lane_spread, min_volume, False)
+
+
+def draw_audio_tune_panel(
+    target: pygame.Surface,
+    layout: AudioTuneLayout,
+    sensitivity: float,
+    lane_spread: float,
+    min_volume: float,
+    font: pygame.font.Font,
+    display_scale: float,
+    Tu: float,
+    *,
+    backing: bool = False,
+) -> None:
+    hdr_c = (125, 135, 168)
+    col_lab = (165, 172, 198)
+    col_val = (245, 246, 252)
+    if backing:
+        patch = pygame.Surface(layout.panel_back.size, pygame.SRCALPHA)
+        patch.fill((10, 12, 22, 200))
+        target.blit(patch, layout.panel_back.topleft)
+    br_t = max(2, int(round(4 * display_scale * Tu)))
+    ln_t = max(1, int(round(display_scale * Tu)))
+    for brect in (
+        layout.sens_dec,
+        layout.sens_inc,
+        layout.spread_dec,
+        layout.spread_inc,
+        layout.vol_dec,
+        layout.vol_inc,
+    ):
+        pygame.draw.rect(target, (70, 100, 160, 220), brect, border_radius=br_t)
+        pygame.draw.rect(
+            target,
+            (200, 215, 240, 220),
+            brect,
+            width=ln_t,
+            border_radius=br_t,
+        )
+        sym = "−" if brect in (layout.sens_dec, layout.spread_dec, layout.vol_dec) else "+"
+        gs = font.render(sym, True, (255, 255, 255))
+        target.blit(gs, gs.get_rect(center=brect.center))
+    target.blit(font.render("=== TIMING ===", True, hdr_c), layout.timing_hdr_xy)
+    target.blit(font.render("[ Sensitivity ]", True, col_lab), layout.sens_lbl_xy)
+    target.blit(
+        font.render(f"{sensitivity:.2f}", True, col_val), layout.sens_val_xy
+    )
+    target.blit(font.render("=== POSITION ===", True, hdr_c), layout.pos_hdr_xy)
+    target.blit(font.render("[ Lane Spread ]", True, col_lab), layout.spread_lbl_xy)
+    target.blit(
+        font.render(f"{lane_spread:.2f}", True, col_val), layout.spread_val_xy
+    )
+    target.blit(font.render("=== CONTROL ===", True, hdr_c), layout.ctrl_hdr_xy)
+    target.blit(font.render("[ Min Volume ]", True, col_lab), layout.vol_lbl_xy)
+    target.blit(
+        font.render(f"{min_volume:.4f}", True, col_val), layout.vol_val_xy
+    )
 
 
 def compute_title_screen_layout(
@@ -390,6 +669,57 @@ def load_time_offset_sec(root: Path) -> float:
         return 0.0
 
 
+def load_game_tune(root: Path) -> tuple[float, float, float]:
+    """sensitivity, lane_spread, min_volume。ファイル無し・不正時は既定値。"""
+    sens = DEFAULT_SENSITIVITY
+    spr = DEFAULT_LANE_SPREAD
+    vol = DEFAULT_MIN_VOLUME
+    p = root / ONSET_RMS_TUNE_FILE
+    if not p.is_file():
+        return (sens, spr, vol)
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return (sens, spr, vol)
+    if not isinstance(raw, dict):
+        return (sens, spr, vol)
+    try:
+        if "sensitivity" in raw:
+            sens = float(raw["sensitivity"])
+        elif "rms_mul" in raw:
+            sens = float(raw["rms_mul"])
+        if "lane_spread" in raw:
+            spr = float(raw["lane_spread"])
+        if "min_volume" in raw:
+            vol = float(raw["min_volume"])
+    except (TypeError, ValueError):
+        return (DEFAULT_SENSITIVITY, DEFAULT_LANE_SPREAD, DEFAULT_MIN_VOLUME)
+    sens = max(TUNE_SENS_MIN, min(TUNE_SENS_MAX, sens))
+    spr = max(TUNE_SPREAD_MIN, min(TUNE_SPREAD_MAX, spr))
+    vol = max(TUNE_VOL_MIN, min(TUNE_VOL_MAX, vol))
+    return (sens, spr, vol)
+
+
+def save_game_tune(root: Path, sensitivity: float, lane_spread: float, min_volume: float) -> None:
+    p = root / ONSET_RMS_TUNE_FILE
+    try:
+        p.write_text(
+            json.dumps(
+                {
+                    "sensitivity": sensitivity,
+                    "lane_spread": lane_spread,
+                    "min_volume": min_volume,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
 def judge_delta(dt: float) -> str | None:
     a = abs(dt)
     if a <= PERFECT_WIN:
@@ -399,6 +729,27 @@ def judge_delta(dt: float) -> str | None:
     if a <= GOOD_WIN:
         return "good"
     return None
+
+
+def judgment_text_color(tier: str) -> tuple[int, int, int]:
+    t = tier.lower()
+    if t == "perfect":
+        return (255, 228, 120)
+    if t == "great":
+        return (255, 255, 255)
+    if t == "good":
+        return (160, 220, 255)
+    return (170, 175, 190)
+
+
+def load_optional_sound_wav(root: Path, filename: str) -> pygame.mixer.Sound | None:
+    p = root / filename
+    if not p.is_file():
+        return None
+    try:
+        return pygame.mixer.Sound(str(p))
+    except pygame.error:
+        return None
 
 
 def note_hit_delta_to_z(delta: float) -> float:
@@ -423,14 +774,13 @@ def project_xy(lx: float, z: float) -> tuple[float, float]:
     return sx, sy
 
 
-def lane_world_x_edges() -> tuple[float, ...]:
-    """LANES_X の各中心に対応するレーン帯の世界 x 境界（長さ LANE_COUNT+1）。
+def lane_world_x_edges(xs: tuple[float, ...]) -> tuple[float, ...]:
+    """レーン中心 xs の各帯の世界 x 境界（長さ LANE_COUNT+1）。
 
     隣接レーンの中点を区切りとし、最外側は内側区間と同じ半幅を外へ延ばす（従来の ±2 枠と同型）。
     """
-    xs = LANES_X
     if len(xs) != LANE_COUNT:
-        raise ValueError("LANES_X の要素数は LANE_COUNT と一致させてください")
+        raise ValueError("レーン中心の要素数は LANE_COUNT と一致させてください")
     edges: list[float] = [xs[0] - (xs[1] - xs[0]) * 0.5]
     for i in range(LANE_COUNT - 1):
         edges.append((xs[i] + xs[i + 1]) * 0.5)
@@ -507,9 +857,11 @@ def draw_alpha_round_rect(
     target.blit(s, rect.topleft)
 
 
-def draw_3d_stage(overlay: pygame.Surface) -> None:
-    """LANES_X に沿ったレーン床と縦グリッド。z=Z_START〜Z_END を台形投影。"""
-    x_edges = lane_world_x_edges()
+def draw_3d_stage(
+    overlay: pygame.Surface, lanes_x: tuple[float, float, float, float]
+) -> None:
+    """lanes_x に沿ったレーン床と縦グリッド。z=Z_START〜Z_END を台形投影。"""
+    x_edges = lane_world_x_edges(lanes_x)
     for lane in range(LANE_COUNT):
         ll = x_edges[lane]
         rr = x_edges[lane + 1]
@@ -548,11 +900,15 @@ def draw_3d_stage(overlay: pygame.Surface) -> None:
     )
 
 
-def main() -> None:
+def main() -> tuple[float, float]:
     if sys.platform == "win32":
         # マウス座標と pygame のサーフェス座標のずれ（HiDPI）を抑える
         os.environ.setdefault("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2")
     pygame.init()
+    try:
+        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+    except pygame.error:
+        pass
     try:
         pygame.key.stop_text_input()
     except (AttributeError, pygame.error):
@@ -569,6 +925,8 @@ def main() -> None:
     title_scr_small = make_font_at_px(max(9, int(round(15 * DISPLAY_SCALE * Tu))))
 
     root = Path(__file__).resolve().parent
+    se_glass_good = load_optional_sound_wav(root, "glass1.wav")
+    se_glass_great = load_optional_sound_wav(root, "glass2.wav")
     display_settings = load_display_settings(root)
     default_hud_right_px = max(8, int(round(18 * DISPLAY_SCALE)))
     hr_px = display_settings.hud_right_font_px
@@ -583,6 +941,11 @@ def main() -> None:
         note_label_font = pygame.font.Font(fp, note_label_sz)
     else:
         note_label_font = pygame.font.SysFont(None, note_label_sz)
+    judge_lbl_sz = max(22, int(round(40 * DISPLAY_SCALE)))
+    if fp:
+        judgment_font = pygame.font.Font(fp, judge_lbl_sz)
+    else:
+        judgment_font = pygame.font.SysFont(None, judge_lbl_sz)
     if display_settings.hud_right_line_gap_px is not None:
         hud_right_line_gap = max(8, min(100, display_settings.hud_right_line_gap_px))
     else:
@@ -595,7 +958,8 @@ def main() -> None:
     notes: list[Note] = []
     session_started = False
     session_t0_perf: float | None = None
-    audio_analyzer = LiveAudioAnalyzer(root, note_lead_sec=APPROACH_SECONDS)
+    sensitivity, lane_spread, min_volume = load_game_tune(root)
+    audio_analyzer: LiveAudioAnalyzer | None = None
     audio_ok = False
     has_sounddevice = sounddevice_available()
 
@@ -605,11 +969,17 @@ def main() -> None:
         return (time.perf_counter() - session_t0_perf) + time_offset_sec
 
     def start_session() -> None:
-        nonlocal session_started, session_t0_perf, audio_ok
+        nonlocal session_started, session_t0_perf, audio_ok, audio_analyzer
         if session_started:
             return
         session_started = True
         session_t0_perf = time.perf_counter()
+        audio_analyzer = LiveAudioAnalyzer(
+            root,
+            note_lead_sec=APPROACH_SECONDS,
+            rms_mul=sensitivity,
+            min_volume=min_volume,
+        )
         audio_ok = audio_analyzer.start(session_t0_perf)
         if not audio_ok:
             print(audio_analyzer.get_hud().get("error", "audio"), file=sys.stderr)
@@ -629,6 +999,11 @@ def main() -> None:
     preview_cache: dict[str, tuple[str | None, pygame.Surface | None]] = {}
     preview_fetching: set[str] = set()
     last_preview_requested = ""
+
+    def sync_tune_file_and_audio() -> None:
+        save_game_tune(root, sensitivity, lane_spread, min_volume)
+        if audio_analyzer is not None:
+            audio_analyzer.set_reactive_tune(sensitivity, min_volume)
 
     def kick_preview(url: str) -> None:
         if url in preview_cache or url in preview_fetching:
@@ -681,6 +1056,17 @@ def main() -> None:
     }
 
     while running:
+        Tu_tune = TITLE_SCREEN_UI_SCALE
+        audio_tune_layout = compute_audio_tune_layout(
+            HEIGHT,
+            WIDTH,
+            DISPLAY_SCALE,
+            Tu_tune,
+            title_scr_small,
+            sensitivity,
+            lane_spread,
+            min_volume,
+        )
         if not session_started:
             title_layout = compute_title_screen_layout(
                 WIDTH,
@@ -690,6 +1076,8 @@ def main() -> None:
                 title_scr_small,
                 youtube_url_candidates,
             )
+        else:
+            title_layout = None
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -729,15 +1117,36 @@ def main() -> None:
                         tier = judge_delta(best_dt)
                         if tier:
                             best.done = True
+                            best.judgment = tier
+                            best.judge_time = now
+                            best.flash = 1.0
                             score += SCORE_TABLE[tier]
                             combo += 1
                             last_judgment = tier.upper()
+                            if tier == "good" and se_glass_good is not None:
+                                se_glass_good.play()
+                            elif tier in ("great", "perfect") and se_glass_great is not None:
+                                se_glass_great.play()
                         else:
+                            best.judgment = "miss"
+                            best.judge_time = now
                             last_judgment = "MISS"
                             combo = 0
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                pos = _pointer_pos_for_mouse_event(event)
+                ns, nsp, nv, tune_hit = apply_audio_tune_click(
+                    pos,
+                    audio_tune_layout,
+                    sensitivity,
+                    lane_spread,
+                    min_volume,
+                    min_vol_shift=bool(pygame.key.get_mods() & pygame.KMOD_SHIFT),
+                )
+                if tune_hit:
+                    sensitivity, lane_spread, min_volume = ns, nsp, nv
+                    sync_tune_file_and_audio()
+                    continue
                 if not session_started and title_layout is not None:
-                    pos = _pointer_pos_for_mouse_event(event)
                     picked = False
                     for idx, rr in title_layout.url_pick_rects:
                         if rr.collidepoint(pos):
@@ -849,7 +1258,7 @@ def main() -> None:
             for i, rr in L.url_pick_rects:
                 u = youtube_url_candidates[i]
                 uy = rr.top + 2
-                num_s = "10." if i == 9 else f"{i + 1}."
+                num_s = f"{i + 1}."
                 tail = u if len(u) <= L.url_ch else u[: L.url_ch - 1] + "…"
                 sel = i == selected_youtube_i
                 bgc = (55, 80, 140, 210) if sel else (26, 30, 44, 130)
@@ -890,6 +1299,18 @@ def main() -> None:
                     (255, 140, 120),
                 )
                 overlay.blit(w1, w1.get_rect(midbottom=(WIDTH // 2, wy)))
+            draw_audio_tune_panel(
+                overlay,
+                audio_tune_layout,
+                sensitivity,
+                lane_spread,
+                min_volume,
+                title_scr_small,
+                DISPLAY_SCALE,
+                Tu,
+                backing=False,
+            )
+
             esc = title_scr_small.render("ESC 終了", True, (120, 125, 140))
             margin = int(round(8 * DISPLAY_SCALE * Tu))
             esc_y = HEIGHT - int(round(18 * DISPLAY_SCALE * Tu))
@@ -900,6 +1321,12 @@ def main() -> None:
             continue
 
         now = game_time_s()
+        assert audio_analyzer is not None
+
+        dt_frame = max(1e-4, clock.get_time() / 1000.0)
+        for n in notes:
+            if n.flash > 0:
+                n.flash = max(0.0, n.flash - dt_frame * FLASH_DECAY_PER_S)
 
         while True:
             try:
@@ -929,13 +1356,17 @@ def main() -> None:
                 continue
             if now > n.time + GOOD_WIN:
                 n.done = True
+                if n.judgment is None:
+                    n.judgment = "miss"
+                    n.judge_time = now
                 score += SCORE_TABLE["miss"]
                 combo = 0
                 last_judgment = "MISS"
 
         screen.fill((8, 10, 18))
         overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        draw_3d_stage(overlay)
+        lanes_x = lanes_x_from_spread(lane_spread)
+        draw_3d_stage(overlay, lanes_x)
 
         drawable: list[tuple[float, Note]] = []
         for n in notes:
@@ -949,7 +1380,7 @@ def main() -> None:
 
         min_lbl = int(round(22 * DISPLAY_SCALE))
         for z, n in drawable:
-            lx = LANES_X[n.lane]
+            lx = lanes_x[n.lane]
             sx, sy = project_xy(lx, z)
             size = note_screen_size(z)
             rect = pygame.Rect(int(sx - size // 2), int(sy - size // 2), size, size)
@@ -975,6 +1406,42 @@ def main() -> None:
                 overlay.blit(lbl_s, lbl_s.get_rect(center=rect.center))
 
         screen.blit(overlay, (0, 0))
+
+        fx_layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        for n in notes:
+            if n.flash <= 0:
+                continue
+            lx_j = lanes_x[n.lane]
+            jx, jy = project_xy(lx_j, Z_END)
+            ring_r = max(
+                3, int(JUDGE_FLASH_RING_BASE * DISPLAY_SCALE * n.flash)
+            )
+            alpha_ring = int(max(0, min(255, 230 * n.flash)))
+            pygame.draw.circle(
+                fx_layer,
+                (255, 255, 200, alpha_ring),
+                (int(jx), int(jy)),
+                ring_r,
+                width=max(2, int(round(2 * DISPLAY_SCALE))),
+            )
+        screen.blit(fx_layer, (0, 0))
+
+        for n in notes:
+            if not n.judgment:
+                continue
+            t_j = now - n.judge_time
+            if t_j < 0 or t_j >= JUDGE_FLOAT_DURATION:
+                continue
+            lx_j = lanes_x[n.lane]
+            jx, jy = project_xy(lx_j, Z_END)
+            y_off = -t_j * JUDGE_RISE_SPEED
+            alpha_t = max(0, int(255 * (1.0 - t_j / JUDGE_FLOAT_DURATION)))
+            col_j = judgment_text_color(n.judgment)
+            label_j = n.judgment.upper()
+            txt_j = judgment_font.render(label_j, True, col_j)
+            txt_j.set_alpha(alpha_t)
+            tr_j = txt_j.get_rect(center=(int(jx), int(jy + y_off)))
+            screen.blit(txt_j, tr_j)
 
         hud_r = audio_analyzer.get_hud()
         hud = [f"Score: {score}", f"Combo: {combo}"]
@@ -1022,7 +1489,11 @@ def main() -> None:
                 border_radius=brad,
             )
 
-        hint = font_small.render("D F J K / ESC終了", True, (160, 165, 185))
+        hint = font_small.render(
+            "D F J K / ESC終了 ・ 左下: TIMING / POSITION / CONTROL",
+            True,
+            (160, 165, 185),
+        )
         screen.blit(hint, (margin, HEIGHT - int(round(28 * DISPLAY_SCALE))))
 
         # 右上: 取り込み音量・リズム指標
@@ -1051,11 +1522,28 @@ def main() -> None:
             surf = font_hud_right.render(line, True, (200, 210, 230))
             screen.blit(surf, (rx, r_top + i * hud_right_line_gap))
 
+        tune_layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        draw_audio_tune_panel(
+            tune_layer,
+            audio_tune_layout,
+            sensitivity,
+            lane_spread,
+            min_volume,
+            title_scr_small,
+            DISPLAY_SCALE,
+            TITLE_SCREEN_UI_SCALE,
+            backing=True,
+        )
+        screen.blit(tune_layer, (0, 0))
+
         pygame.display.flip()
         clock.tick(FPS)
 
-    audio_analyzer.stop()
+    if audio_analyzer is not None:
+        audio_analyzer.stop()
+    save_game_tune(root, sensitivity, lane_spread, min_volume)
     pygame.quit()
+    return (sensitivity, lane_spread, min_volume)
 
 
 if __name__ == "__main__":

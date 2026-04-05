@@ -9,9 +9,9 @@ YouTube音ゲー（Python版）仕様書
   ウィンドウ・ステージ・ノーツは半透明とし、背後の YouTube 映像を妨げにくくする。
 
   再生 URL の読み込み優先順:
-  1. youtube_urls.txt … 最大 10 行の http URL（タイトルで 1〜9・0=10 から選択）
+  1. youtube_urls.txt … 最大 20 行の http URL（タイトルで 1〜9・0=10、矢印・クリックで全件）
   2. youtube_url.txt … 単一 URL（候補が 1 件だけになる）
-  3. *.url（Internet ショートカット）を順に最大 10 件まで
+  3. *.url（Internet ショートカット）を順に最大 20 件まで
   4. コード内の既定 URL
   雛形: youtube_urls.example.txt（単一 URL は同ファイル冒頭の説明のとおり youtube_url.txt）
   ・タイトル画面で URL を選ぶと YouTube oEmbed でタイトル・サムネを取得し表示（要ネットワーク）

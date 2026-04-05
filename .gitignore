@@ -36,6 +36,9 @@ youtube_urls.txt
 # 表示（ローカル。雛形は display_settings.example.json）
 display_settings.json
 
+# オンセット / RMS 倍率（雛形は onset_rms_tune.example.json）
+onset_rms_tune.json
+
 # 音声解析の実行中スナップショット（アプリが上書き）
 live_audio_reactive.json
 

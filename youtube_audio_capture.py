@@ -28,6 +28,10 @@ from frequency_lanes import (
 # youtubeotoge と合わせる（ノーツが判定線に来るまでの秒）
 NOTE_LEAD_SECONDS = 1.85
 MIN_ONSET_GAP = 0.28
+# オンセット判定 novelty > onset_base + rms_smooth * rms_mul（起動画面で変更可）
+DEFAULT_ONSET_BASE = 0.004
+DEFAULT_RMS_MUL = 0.5
+DEFAULT_MIN_VOLUME = 0.0001
 SAMPLE_RATE = 44100
 BLOCK_SIZE = 1024
 
@@ -127,9 +131,18 @@ def _default_input_device_index(sd) -> int:
 class LiveAudioAnalyzer:
     """バックグラウンドで入力ストリームを解析し、ノーツ候補を queue に積む。"""
 
-    def __init__(self, root: Path, note_lead_sec: float = NOTE_LEAD_SECONDS) -> None:
+    def __init__(
+        self,
+        root: Path,
+        note_lead_sec: float = NOTE_LEAD_SECONDS,
+        rms_mul: float = DEFAULT_RMS_MUL,
+        min_volume: float = DEFAULT_MIN_VOLUME,
+    ) -> None:
         self._root = root
         self._note_lead = note_lead_sec
+        self._onset_base = float(DEFAULT_ONSET_BASE)
+        self._rms_mul = float(rms_mul)
+        self._min_volume = float(min_volume)
         self._note_queue: queue.Queue[dict] = queue.Queue()
         self._lock = threading.Lock()
         self._rms = 0.0
@@ -170,6 +183,12 @@ class LiveAudioAnalyzer:
                 "device": self._device_name or "(none)",
                 "error": self._error,
             }
+
+    def set_reactive_tune(self, rms_mul: float, min_volume: float) -> None:
+        """Sensitivity / Min Volume を実行中に更新（コールバックが参照）。"""
+        with self._lock:
+            self._rms_mul = float(rms_mul)
+            self._min_volume = float(min_volume)
 
     def _flush_json(self) -> None:
         with self._lock:
@@ -248,6 +267,13 @@ class LiveAudioAnalyzer:
             sn = np.array(self._spectrum_norm, dtype=np.float64)
             sn = 0.65 * sn + 0.35 * norm
             self._spectrum_norm = [float(x) for x in sn]
+            rms_smooth_now = self._rms_smooth
+            ob = self._onset_base
+            rm = self._rms_mul
+            mv = self._min_volume
+
+        if rms < mv:
+            return
 
         rms_boost = max(0.0, min(1.0, (rms - 0.012) / 0.07))
         eff_onset_gap = MIN_ONSET_GAP * (1.0 - 0.52 * rms_boost)
@@ -257,7 +283,7 @@ class LiveAudioAnalyzer:
 
         spawns = 0
         if (
-            novelty > 0.004 + self._rms_smooth * 0.5
+            novelty > ob + rms_smooth_now * rm
             and (now - self._last_onset_perf) >= eff_onset_gap
             and spawns < max_block
         ):
