@@ -2,92 +2,88 @@ YouTube音ゲー（Python版）仕様書
 ================================
 
 ■ 概要
-  ブラウザで YouTube を再生し、別ウィンドウでリズムゲーム用のオーバーレイを表示する。
-  音源は PC が取り込む再生音声（ループバック・ステレオミックス等）のみ。ローカル MP3 の
-  再生やファイル譜面（chart.json）の読込は行わない。
-  音量・オンセットからノーツ時刻を推定し、ループバック波形の周波数帯でレーン 0〜3 を割当。
-  ウィンドウ・ステージ・ノーツは半透明とし、背後の YouTube 映像を妨げにくくする。
+  ブラウザで YouTube を再生し、別ウィンドウの pygame で譜面を表示する。
+  ノーツはリアルタイム音声解析ではなく、事前に MP3 から生成した譜面 JSON を使う。
+  ゲーム起動時は URL から YouTube ID を抽出し、song_db.json と charts/*.json を参照して再生する。
 
-  再生 URL の読み込み優先順:
-  1. youtube_urls.txt … 最大 20 行の http URL（タイトルで 1〜9・0=10、矢印・クリックで全件）
-  2. youtube_url.txt … 単一 URL（候補が 1 件だけになる）
-  3. *.url（Internet ショートカット）を順に最大 20 件まで
-  4. コード内の既定 URL
-  雛形: youtube_urls.example.txt（単一 URL は同ファイル冒頭の説明のとおり youtube_url.txt）
-  ・タイトル画面で URL を選ぶと YouTube oEmbed でタイトル・サムネを取得し表示（要ネットワーク）
-  ・起動画面は ↑↓ でリスト選択（1〜0 直接指定・クリックも可）。UI は TITLE_SCREEN_UI_SCALE で一括縮小
+■ フォルダ構成
+  project/
+    youtubeotoge.py
+    generate_chart_from_mp3.py
+    song_db.json
+    charts/
+      <youtube_id>.json
+    mp3/
+      01 - xxxx.mp3 〜 99 - xxxx.mp3（推奨命名）
 
-■ レーン割当（ループバック各ブロックの rFFT・帯域エネルギー最大）
-  ・0〜250 Hz      → レーン 0（キック・青系）
-  ・250〜1500 Hz   → レーン 1（スネア・黄）
-  ・1500〜5000 Hz  → レーン 2（スネア・オレンジ寄り）
-  ・5000 Hz〜      → レーン 3（ハイハット・赤系）
-  実装: frequency_lanes.py（youtube_audio_capture が参照）
+■ 曲データベース（song_db.json）
+  形式:
+  {
+    "songs": [
+      {
+        "youtube_id": "string",
+        "title": "string",
+        "youtube_title": "string",
+        "duration_sec": float,
+        "mp3": "filename.mp3",
+        "offset": float
+      }
+    ]
+  }
 
-■ ノーツ生成（解析側）
-  ・オンセット: 従来の立ち上がり検出。RMS が高いほど最小間隔を短くしサビで増える
-  ・帯域: 正規化スペクトルが閾値を超えたレーンにノーツ（左上 4 本のバーと対応、左上にRMS閾値線は表示しない）
-  ・RMS 追加: RMS > 約 0.02 で別系統のパルス間隔を詰めて追加ノーツ
-  ・1 ブロックあたりの生成数に上限（静か時少／RMS 高いとき多め）
+  ・youtube_id: YouTube URL から抽出（watch?v= / youtu.be 対応）
+  ・duration_sec: MP3 解析結果（既存登録値を YouTube 側長さとして比較に利用）
+  ・offset: 譜面時刻に加算する補正秒（note_time = chart_time + offset）
 
-■ 画面・入力
-  ・解像度: 800×600 基準×DISPLAY_SCALE
-  ・レーン数: 4
-  ・キー: D, F, J, K（上からレーン 0〜3）
-  ・ESC: 終了
-  ・ノーツ表示: 3D 透視投影（奥の z が大きく、手前の判定面で z が小さい）。
-    投影式は (lane_x / z)*FOV + 中心、縦は (FLOOR_Y / z) + 消点オフセット。
-  ・判定ライン: 3D 空間の手前面（z = Z_END 付近を画面に投影した位置）
-  ・半透明: レーン床・ガイド線・ノーツ・（Windows で可能なら）ウィンドウ全体の透過
+■ 譜面生成（generate_chart_from_mp3.py）
+  入力:
+  ・MP3（librosa で mono 読込）
+  ・YouTube URL（または番号で自動紐づけ）
 
-■ ゲームフロー
-  1. タイトル画面で「スタート」（クリック / Space / Enter）
-  2. 同一タイミングで既定ブラウザが YouTube を開く
-  3. 音声入力ストリームの解析を開始（sounddevice・ループバック推奨）
-  4. オンセット検出に応じてノーツ生成（レーンは上記周波数帯）
-  5. ノーツが奥から手前へ近づく
-  6. キー入力でタイミング判定・スコア・コンボ更新
-  7. 解析メトリクスを画面右上に表示し、一定間隔で JSON に書き出し
+  処理:
+  ・onset_strength / onset_detect でノーツ時刻候補を抽出
+  ・テンポ推定（BPM）
+  ・各オンセット時点のスペクトル重心から lane 0〜3 を決定
+    - 0〜250 Hz      → lane 0
+    - 250〜1500 Hz   → lane 1
+    - 1500〜5000 Hz  → lane 2
+    - 5000 Hz〜      → lane 3
+  ・charts/<youtube_id>.json を保存
+  ・song_db.json を upsert（同 youtube_id は更新）
 
-■ 判定
-  ・Perfect: ±0.05 秒
-  ・Great: ±0.1 秒
-  ・Good: ±0.2 秒
-  ・Miss: 上記以外、または判定窓通過後の未処理
+■ 自動紐づけ
+  ・mp3/ に 01-〜99- で始まる MP3 がある場合、引数なし実行で自動紐づけを開始
+  ・youtube_url.txt の同じ番号行と MP3 を対応付ける
+  ・未連携（song_db に youtube_id が未登録）番号を優先
 
-■ スコア
-  ・Perfect: 100 点
-  ・Great: 70 点
-  ・Good: 50 点
-  ・Miss: 0 点
+■ 長さ差チェックと確認
+  ・既存 song_db の同 youtube_id の duration_sec を YouTube 側長さとして扱う
+  ・|mp3_duration - youtube_duration| > 2.0 秒 で確認表示
+    「曲の長さが違いますが、jsonによりnoteを作成しますか？」
 
-■ タイム基準
-  ・スタート押下を 0 秒とするセッション時間（time.perf_counter 系）
-  ・任意で sync.json の time_offset_sec で全体オフセット
+■ offset 自動判定
+  ・曲長差がある場合、BPM/拍解析 + 先頭無音検出で offset を自動推定
+  ・10秒を超えたらキャンセル
+    「長くかかるので、自分で調べてね」
+  ・手動指定: --offset / 手動入力モード（--manual-offset）
 
-■ 表示設定（任意）
-  ・ファイル名: display_settings.json（実行フォルダ＝スクリプトと同じ場所）
-  ・無い場合: ゲーム中の右上メトリクスは小フォント既定（約 18×DISPLAY_SCALE px）
-  ・hud_right_font_px: 右上テキストのフォントサイズ（整数、6〜120 程度を推奨）
-  ・hud_right_line_gap_px: 行間（省略時はフォントの get_linesize() に合わせる）
-  ・雛形: display_settings.example.json をコピーして編集
+■ ゲーム側（youtubeotoge.py）
+  ・タイトルで URL 選択
+  ・extract_youtube_id(url) で ID 抽出
+  ・song_db.json から曲情報取得
+  ・charts/<youtube_id>.json をロード
+  ・note_time = chart_time + offset で同期
+  ・既存の pygame 描画 / キー入力 / 判定ロジックは維持
+  ・リアルタイム音声入力ノーツ生成は無効化
 
-■ 音声入力デバイス（任意・番号指定）
-  ・ループバック / Stereo Mix が名前判定で取れない場合、デバイス番号で固定できる
-  ・python list_audio_devices.py … Index とデバイス名の一覧を表示
-  ・audio_settings.json … {"input_device_index": 番号}（雛形: audio_settings.example.json）
-  ・指定がある場合は自動ループバック検出より優先。番号が無効ならストリームは開始しない
+■ 判定とスコア
+  ・Perfect: ±0.05 秒（100点）
+  ・Great: ±0.10 秒（70点）
+  ・Good: ±0.20 秒（50点）
+  ・Miss: 0点
 
-■ リアルタイム解析出力（JSON）
-  ・ファイル名: live_audio_reactive.json（実行フォルダ）
-  ・内容の例: RMS、平滑 RMS、推定 BPM、最後のオンセット強度、生成ノーツイベント履歴
-
-■ 使用技術（目安）
+■ 使用ライブラリ
   ・Python 3.10 以降推奨
-  ・pygame（描画・入力）
-  ・sounddevice + NumPy（リアルタイム音声入力・解析）
-
-■ 今後の拡張（案）
-  ・エフェクト強化
-  ・スコアランキング
-  ・ブラウザ埋め込み再生との直結
+  ・pygame
+  ・numpy
+  ・librosa

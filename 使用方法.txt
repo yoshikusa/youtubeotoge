@@ -2,81 +2,91 @@ YouTube音ゲー（youtubeotoge）— 使用方法
 ========================================
 
 ■ 概要
-  youtubeotoge.py は、ブラウザの YouTube の上に半透明ウィンドウを重ねて遊ぶ想定の
-  リズムゲームです。音源は PC の音声入力で取り込んだ「再生中の YouTube」（ループバック
-  等）のみです。ローカル MP3 の再生や chart.json による譜面読込はありません。
+  youtubeotoge.py は、ブラウザの YouTube の上に半透明ウィンドウを重ねて遊ぶ
+  リズムゲームです。ノーツはリアルタイム解析ではなく、MP3を事前解析して生成した
+  譜面 JSON（charts/<youtube_id>.json）を再生します。
 
-  ノーツのレーンは、ループバック波形を周波数帯に分けたときの最強帯で決まります。
-  ・0〜250 Hz → レーン0（キック・青） ・250〜1500 Hz → レーン1（スネア・黄）
-  ・1500〜5000 Hz → レーン2（黄橙） ・5000 Hz〜 → レーン3（ハイハット・赤）
-  （frequency_lanes.py / youtube_audio_capture.py）
+  曲の対応情報は song_db.json で管理し、YouTube URL から抽出した youtube_id で
+  譜面を引きます。再生時は note_time = chart_time + offset で同期します。
 
 ■ 必要なもの
   - Python 3.10 以降を推奨
   - pip install -r requirements.txt
-  - ブラウザの音を取り込む場合:
-      Windows なら「○○ (Loopback)」「ステレオ ミックス」等の録音デバイス、
-      または仮想オーディオケーブルなど（環境により異なります）
 
 ■ セットアップ
   1. コマンドプロンプトまたは PowerShell を開く
   2. プロジェクトフォルダへ移動
-     例: cd d:\Users\kusak\python\youtubeotoge
+     例: cd d:\Users\kusak\python\youtubeotoge‗mp3mode
   3. pip install -r requirements.txt
-  4. 開きたい動画の URL:
-     - 複数（最大20件まで）をタイトルで選ぶ: youtube_urls.example.txt をコピーして
-       youtube_urls.txt にし、http で始まる行を並べる。起動後 1〜9・0（10番目）・矢印・▲▼・クリックで選択し、スタートでブラウザが開く。
-     - 1 本だけ: youtube_url.txt を新規作成し、http で始まる URL を 1 行（例は youtube_urls.example.txt 冒頭）
-     - または *.url をフォルダに置く
-     優先順は youtube_urls.txt → youtube_url.txt → *.url → 既定
-  5. ゲームでノーツが出ないとき、コンソールに「sounddevice 未インストール」と出る場合は:
-        pip install sounddevice
+  4. mp3/ に MP3 を置く（推奨: 01 - 曲名.mp3 〜 99 - 曲名.mp3）
+  5. youtube_url.txt に URL を1行ずつ書く（1行目=01番、2行目=02番…）
+  6. まず譜面を作る（下の「譜面生成」を参照）
+
+■ 譜面生成（generate_chart_from_mp3.py）
+  A) 引数なし（自動紐づけ）
+  - python generate_chart_from_mp3.py
+  - 条件: mp3/ に 01-〜99- で始まる MP3 があること
+  - youtube_url.txt の同じ番号行と自動で対応
+  - 既定で offset 自動判定を使う
+
+  B) 番号指定
+  - python generate_chart_from_mp3.py --slot 13 --yes
+
+  C) 明示指定
+  - python generate_chart_from_mp3.py --mp3 "mp3/13 - はるのとなり.mp3" --youtube "https://www.youtube.com/watch?v=qJ-Kx7IKYEA"
+
+  主なオプション:
+  - --yes            : 長さ差確認をスキップ
+  - --auto-offset    : offset 自動判定（既定で有効）
+  - --manual-offset  : offset を手動入力に切替
+  - --offset -0.25   : offset を直接指定
+
+  長さ差チェック:
+  - 既存 song_db.json の同 youtube_id の duration_sec と MP3長を比較
+  - 差が2秒超なら確認表示
+
+  offset 自動判定:
+  - BPM/拍解析 + 先頭無音検出で推定
+  - 10秒超過時: 「長くかかるので、自分で調べてね」でキャンセル
 
 ■ メインの遊び方（youtubeotoge.py）
   1. python youtubeotoge.py
   2. 右のリストで動画を選ぶ（↑↓キー、または 1〜0・クリック）。左にサムネイルとタイトル（YouTube 取得・要ネット）
   3. 「スタート」または Space / Enter
-     → ブラウザで YouTube が開き、音声キャプチャが始まる
+     → ブラウザで YouTube が開き、song_db/charts から譜面再生が始まる
   4. ウィンドウを動画の上に重ねる（Windows では窓ごと透過の場合あり）
   5. D F J K でノーツを取る。ESC で終了
      判定文字は各レーンの判定線付近に約 0.5 秒表示される（GOOD / GREAT は任意で効果音:
      プロジェクト直下に glass1.wav・glass2.wav を置くと GOOD / GREAT・PERFECT で再生。MISS は無音）
 
   画面左上:
-  - Score / Combo の下に 4 本のスペクトラム（レーン 0〜3 の帯域）。高いほど明るい色
-  - その帯域が強いと同レーンにノーツが出やすい（左上にはRMS閾値線は表示しない）
+  - Score / Combo / Last / Song を表示
 
   画面右上の表示:
-  - RMS / RMS~ … 取り込み音量とその平滑化
-  - BPM~ … 直近オンセットから推定したテンポ（目安）
-  - Onset … 直近の立ち上がり強度
-  - live_audio_reactive.json … 解析ログのファイル名
-  - 使用中の入力デバイス名・警告文
-
-  ログファイル:
-  - live_audio_reactive.json … 約 1 秒ごとに更新（メトリクスとノーツイベント履歴）
+  - YouTube ID / Notes Left / Offset
 
   調整:
   - youtubeotoge.py 内の WINDOW_ALPHA（0〜255）… ウィンドウの不透明度（Windows）
   - sync.json 例: {"time_offset_sec": -0.2} … ゲーム内時刻の微調整
   - display_settings.json … ゲーム中の右上メトリクス用フォント（例は display_settings.example.json）
-  - 音声入力を番号で指定 … python list_audio_devices.py で Index を確認し、
-    audio_settings.json に {"input_device_index": 番号}（例: audio_settings.example.json）
 
 ■ 同梱ファイルの役割（参考）
   youtubeotoge.py           … ゲーム本体
+  generate_chart_from_mp3.py … MP3事前解析・譜面生成・song_db更新
+  song_db.json              … 曲データベース（youtube_id, mp3, offset など）
+  charts/*.json             … 生成済み譜面
   youtube_preview.py        … タイトル画面用 YouTube oEmbed / サムネ取得
   youtube_urls.example.txt  … URL 設定の雛形（複数は → youtube_urls.txt、1 本だけは → youtube_url.txt）
-  youtube_audio_capture.py … ループバック音声・解析・ノーツキュー・JSON 出力
-  frequency_lanes.py         … 周波数帯→レーン・色・ラベル
-  list_audio_devices.py     … 入力デバイス一覧（audio_settings 用）
   youtube_otoge_spec.txt   … 仕様書
   使用方法.txt             … 本ファイル
 
 ■ トラブルシュート
-  - ノーツがほとんど出ない … ループバックではなくマイクになっている可能性。
-    録音デバイスを確認する。
-  - sounddevice / pygame の ImportError … pip install -r requirements.txt
+  - 「song_db.json に youtube_id=... がありません」:
+    generate_chart_from_mp3.py でその曲を先に生成する
+  - 「charts/<id>.json を読み込めません」:
+    charts に該当ファイルがあるか確認する
+  - librosa / numpy / pygame の ImportError:
+    pip install -r requirements.txt
   - 音と表示のズレ … sync.json の time_offset_sec を調整
 
 ■ 仕様の詳細

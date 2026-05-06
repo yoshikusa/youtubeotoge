@@ -1,0 +1,13 @@
+引数なし実行で自動紐づけ
+youtube_url.txt の番号と mp3/ の NN - 曲名.mp3 を照合
+番号一致候補のうち最新番号を自動採用
+--slot 指定対応（例: --slot 13）
+13番なら qJ-Kx7IKYEA と mp3/13 - はるのとなり.mp3 を自動対応
+番号 + 曲長チェック対応
+既存 song_db.json の同 youtube_id の duration_sec を YouTube側長さとして比較
+差が 2.0s 超なら
+「曲の長さが違いますが、jsonによりnoteを作成しますか？」 を確認表示
+offset 微調整対応
+実行時に入力プロンプトで微調整
+--offset で直接指定も可能
+song_db.json に保存される

@@ -1,0 +1,36 @@
+{
+  "songs": [
+    {
+      "youtube_id": "5tc14WHUoMw",
+      "title": "01 - あのバンド",
+      "youtube_title": "01 - あのバンド",
+      "duration_sec": 213.787,
+      "mp3": "01 - あのバンド.mp3",
+      "offset": 34
+    },
+    {
+      "youtube_id": "aU8ruUe7UlE",
+      "title": "02- 祝福",
+      "youtube_title": "02- 祝福",
+      "duration_sec": 196.235,
+      "mp3": "02- 祝福.mp3",
+      "offset": -0.6014
+    },
+    {
+      "youtube_id": "qJ-Kx7IKYEA",
+      "title": "13 - はるのとなり",
+      "youtube_title": "13 - はるのとなり",
+      "duration_sec": 219.493,
+      "mp3": "13 - はるのとなり.mp3",
+      "offset": -0.3007
+    },
+    {
+      "youtube_id": "VxYCVjFDzB8",
+      "title": "17 - OH MY JULIET!",
+      "youtube_title": "17 - OH MY JULIET!",
+      "duration_sec": 280.307,
+      "mp3": "17 - OH MY JULIET!.mp3",
+      "offset": 13
+    }
+  ]
+}

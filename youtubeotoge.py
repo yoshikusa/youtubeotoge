@@ -22,25 +22,17 @@ import time
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pygame
 
 from frequency_lanes import NOTE_RGB
-from youtube_audio_capture import JSON_SNAPSHOT, LiveAudioAnalyzer
 from youtube_preview import fetch_youtube_preview
 
 # ウィンドウ・3D・UI の基準解像度 800x600 からの倍率
 DISPLAY_SCALE = 1.5
 # 起動画面の UI 倍率（1.0=大、0.5=小 の中間付近）
 TITLE_SCREEN_UI_SCALE = 0.75
-
-
-def sounddevice_available() -> bool:
-    try:
-        import sounddevice  # noqa: F401
-    except ImportError:
-        return False
-    return True
 
 
 _UI_FONT_CANDIDATES = (
@@ -146,6 +138,8 @@ JUDGE_FLASH_RING_BASE = 30
 
 # --- ノーツはループバック音声の解析のみ（時刻=オンセット、レーン=周波数帯）---
 SYNC_FILE = "sync.json"
+SONG_DB_FILE = "song_db.json"
+CHARTS_DIR = "charts"
 # 表示オプション（任意）。無い場合は既定値。例: display_settings.example.json
 DISPLAY_SETTINGS_FILE = "display_settings.json"
 # 再生 URL の最終フォールバック（youtube_url.txt / *.url が無いとき）
@@ -184,6 +178,16 @@ class Note:
     judgment: str | None = None
     judge_time: float = 0.0
     flash: float = 0.0
+
+
+@dataclass(frozen=True)
+class SongEntry:
+    youtube_id: str
+    title: str
+    youtube_title: str
+    duration_sec: float
+    mp3: str
+    offset: float
 
 
 def _http_urls_from_text(raw: str) -> list[str]:
@@ -236,6 +240,88 @@ def load_youtube_url_candidates(root: Path) -> list[str]:
     if not urls:
         urls = [DEFAULT_YOUTUBE_URL]
     return urls[:MAX_YOUTUBE_SLOTS]
+
+
+def extract_youtube_id(url: str) -> str:
+    """YouTube URL から動画 ID を抽出（watch / youtu.be 対応）。"""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    try:
+        parsed = urlparse(u)
+    except ValueError:
+        return ""
+    host = parsed.netloc.lower()
+    if host.endswith("youtu.be"):
+        return parsed.path.strip("/").split("/")[0]
+    if "youtube.com" in host or host.endswith("youtube-nocookie.com"):
+        q = parse_qs(parsed.query)
+        vid = q.get("v")
+        if vid and vid[0]:
+            return vid[0]
+        segs = [s for s in parsed.path.split("/") if s]
+        if len(segs) >= 2 and segs[0] in {"embed", "shorts", "v"}:
+            return segs[1]
+    return ""
+
+
+def load_song_db(root: Path) -> dict[str, SongEntry]:
+    p = root / SONG_DB_FILE
+    if not p.is_file():
+        return {}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+    songs = raw.get("songs", []) if isinstance(raw, dict) else []
+    out: dict[str, SongEntry] = {}
+    if not isinstance(songs, list):
+        return out
+    for row in songs:
+        if not isinstance(row, dict):
+            continue
+        yt = str(row.get("youtube_id", "")).strip()
+        if not yt:
+            continue
+        try:
+            out[yt] = SongEntry(
+                youtube_id=yt,
+                title=str(row.get("title", "") or ""),
+                youtube_title=str(row.get("youtube_title", "") or ""),
+                duration_sec=float(row.get("duration_sec", 0.0) or 0.0),
+                mp3=str(row.get("mp3", "") or ""),
+                offset=float(row.get("offset", 0.0) or 0.0),
+            )
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def load_chart_notes(root: Path, youtube_id: str, offset: float) -> list[Note]:
+    p = root / CHARTS_DIR / f"{youtube_id}.json"
+    if not p.is_file():
+        return []
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return []
+    notes_raw = raw.get("notes", raw) if isinstance(raw, dict) else raw
+    if not isinstance(notes_raw, list):
+        return []
+    out: list[Note] = []
+    for row in notes_raw:
+        if not isinstance(row, dict):
+            continue
+        try:
+            t = float(row.get("time", 0.0)) + offset
+            lane = int(row.get("lane", -1))
+        except (TypeError, ValueError):
+            continue
+        if lane < 0 or lane >= LANE_COUNT:
+            continue
+        out.append(Note(time=t, lane=lane, done=False))
+    out.sort(key=lambda n: n.time)
+    return out
 
 
 @dataclass(frozen=True)
@@ -774,6 +860,47 @@ def project_xy(lx: float, z: float) -> tuple[float, float]:
     return sx, sy
 
 
+def clamp_center_for_rect_on_screen(
+    cx: float,
+    cy: float,
+    rect_w: int,
+    rect_h: int,
+    margin: int = 0,
+) -> tuple[int, int]:
+    """get_rect(center=...) で貼るとき、矩形全体が [0,W)×[0,H) に収まるよう中心を丸める。"""
+    half_w = max(0, rect_w // 2)
+    half_h = max(0, rect_h // 2)
+    lo_x = margin + half_w
+    hi_x = WIDTH - margin - half_w
+    lo_y = margin + half_h
+    hi_y = HEIGHT - margin - half_h
+    if lo_x > hi_x:
+        ix = WIDTH // 2
+    else:
+        ix = int(max(lo_x, min(hi_x, round(cx))))
+    if lo_y > hi_y:
+        iy = HEIGHT // 2
+    else:
+        iy = int(max(lo_y, min(hi_y, round(cy))))
+    return ix, iy
+
+
+def clamp_circle_center_on_screen(cx: float, cy: float, radius: int) -> tuple[int, int]:
+    """円が画面外にほぼ消えないよう中心を丸める（Lane spread 最大時の左右レーン向け）。"""
+    r = max(0, int(radius))
+    lo_x, hi_x = r, WIDTH - r
+    lo_y, hi_y = r, HEIGHT - r
+    if lo_x > hi_x:
+        ix = WIDTH // 2
+    else:
+        ix = int(max(lo_x, min(hi_x, round(cx))))
+    if lo_y > hi_y:
+        iy = HEIGHT // 2
+    else:
+        iy = int(max(lo_y, min(hi_y, round(cy))))
+    return ix, iy
+
+
 def lane_world_x_edges(xs: tuple[float, ...]) -> tuple[float, ...]:
     """レーン中心 xs の各帯の世界 x 境界（長さ LANE_COUNT+1）。
 
@@ -900,7 +1027,7 @@ def draw_3d_stage(
     )
 
 
-def main() -> tuple[float, float]:
+def main() -> tuple[float, float, float]:
     if sys.platform == "win32":
         # マウス座標と pygame のサーフェス座標のずれ（HiDPI）を抑える
         os.environ.setdefault("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2")
@@ -959,9 +1086,9 @@ def main() -> tuple[float, float]:
     session_started = False
     session_t0_perf: float | None = None
     sensitivity, lane_spread, min_volume = load_game_tune(root)
-    audio_analyzer: LiveAudioAnalyzer | None = None
-    audio_ok = False
-    has_sounddevice = sounddevice_available()
+    song_db = load_song_db(root)
+    current_song: SongEntry | None = None
+    session_error = ""
 
     def game_time_s() -> float:
         if session_t0_perf is None:
@@ -969,21 +1096,26 @@ def main() -> tuple[float, float]:
         return (time.perf_counter() - session_t0_perf) + time_offset_sec
 
     def start_session() -> None:
-        nonlocal session_started, session_t0_perf, audio_ok, audio_analyzer
+        nonlocal session_started, session_t0_perf, notes, current_song, session_error
         if session_started:
             return
+        chosen_url = youtube_url_candidates[selected_youtube_i]
+        youtube_id = extract_youtube_id(chosen_url)
+        if not youtube_id:
+            session_error = "YouTube URL から動画 ID を抽出できません。"
+            return
+        current_song = song_db.get(youtube_id)
+        if current_song is None:
+            session_error = f"song_db.json に youtube_id={youtube_id} がありません。"
+            return
+        notes = load_chart_notes(root, youtube_id, current_song.offset)
+        if not notes:
+            session_error = f"charts/{youtube_id}.json を読み込めません。"
+            return
+        session_error = ""
         session_started = True
         session_t0_perf = time.perf_counter()
-        audio_analyzer = LiveAudioAnalyzer(
-            root,
-            note_lead_sec=APPROACH_SECONDS,
-            rms_mul=sensitivity,
-            min_volume=min_volume,
-        )
-        audio_ok = audio_analyzer.start(session_t0_perf)
-        if not audio_ok:
-            print(audio_analyzer.get_hud().get("error", "audio"), file=sys.stderr)
-        webbrowser.open(youtube_url_candidates[selected_youtube_i])
+        webbrowser.open(chosen_url)
 
     bw = max(108, int(round(238 * DISPLAY_SCALE * Tu)))
     bh = max(28, int(round(40 * DISPLAY_SCALE * Tu)))
@@ -1002,8 +1134,6 @@ def main() -> tuple[float, float]:
 
     def sync_tune_file_and_audio() -> None:
         save_game_tune(root, sensitivity, lane_spread, min_volume)
-        if audio_analyzer is not None:
-            audio_analyzer.set_reactive_tune(sensitivity, min_volume)
 
     def kick_preview(url: str) -> None:
         if url in preview_cache or url in preview_fetching:
@@ -1286,15 +1416,15 @@ def main() -> tuple[float, float]:
 
             hint_y = start_btn.top - int(round(4 * DISPLAY_SCALE * Tu))
             sub = title_scr_small.render(
-                "Space / Enter / クリックで開始 ・ ループバック・帯域レーン",
+                "Space / Enter / クリックで開始 ・ 事前生成譜面を再生",
                 True,
                 (165, 170, 188),
             )
             overlay.blit(sub, sub.get_rect(midbottom=(WIDTH // 2, hint_y)))
-            if not has_sounddevice:
+            if session_error:
                 wy = hint_y - sub.get_height() - int(round(4 * DISPLAY_SCALE * Tu))
                 w1 = title_scr_small.render(
-                    "! sounddevice 未インストール → pip install sounddevice",
+                    f"! {session_error}",
                     True,
                     (255, 140, 120),
                 )
@@ -1321,35 +1451,11 @@ def main() -> tuple[float, float]:
             continue
 
         now = game_time_s()
-        assert audio_analyzer is not None
 
         dt_frame = max(1e-4, clock.get_time() / 1000.0)
         for n in notes:
             if n.flash > 0:
                 n.flash = max(0.0, n.flash - dt_frame * FLASH_DECAY_PER_S)
-
-        while True:
-            try:
-                ev = audio_analyzer.note_queue.get_nowait()
-                tr: tuple[int, int, int] | None = None
-                if all(k in ev for k in ("r", "g", "b")):
-                    try:
-                        tr = (int(ev["r"]), int(ev["g"]), int(ev["b"]))
-                    except (TypeError, ValueError):
-                        tr = None
-                notes.append(
-                    Note(
-                        time=float(ev["hit_time"]),
-                        lane=int(ev["lane"]),
-                        done=False,
-                        rgb=tr,
-                        label=str(ev.get("label", "") or ""),
-                    )
-                )
-            except queue.Empty:
-                break
-
-        audio_analyzer.maybe_flush_json(time.perf_counter())
 
         for n in notes:
             if n.done:
@@ -1416,11 +1522,12 @@ def main() -> tuple[float, float]:
             ring_r = max(
                 3, int(JUDGE_FLASH_RING_BASE * DISPLAY_SCALE * n.flash)
             )
+            cx_ring, cy_ring = clamp_circle_center_on_screen(jx, jy, ring_r)
             alpha_ring = int(max(0, min(255, 230 * n.flash)))
             pygame.draw.circle(
                 fx_layer,
                 (255, 255, 200, alpha_ring),
-                (int(jx), int(jy)),
+                (cx_ring, cy_ring),
                 ring_r,
                 width=max(2, int(round(2 * DISPLAY_SCALE))),
             )
@@ -1440,13 +1547,22 @@ def main() -> tuple[float, float]:
             label_j = n.judgment.upper()
             txt_j = judgment_font.render(label_j, True, col_j)
             txt_j.set_alpha(alpha_t)
-            tr_j = txt_j.get_rect(center=(int(jx), int(jy + y_off)))
+            jm = max(2, int(round(4 * DISPLAY_SCALE)))
+            tcx, tcy = clamp_center_for_rect_on_screen(
+                jx,
+                jy + y_off,
+                txt_j.get_width(),
+                txt_j.get_height(),
+                margin=jm,
+            )
+            tr_j = txt_j.get_rect(center=(tcx, tcy))
             screen.blit(txt_j, tr_j)
 
-        hud_r = audio_analyzer.get_hud()
         hud = [f"Score: {score}", f"Combo: {combo}"]
         if last_judgment:
             hud.append(f"Last: {last_judgment}")
+        if current_song is not None:
+            hud.append(f"Song: {current_song.title or current_song.youtube_id}")
         margin = int(round(12 * DISPLAY_SCALE))
         y0 = int(round(8 * DISPLAY_SCALE))
         line_gap = int(round(26 * DISPLAY_SCALE))
@@ -1464,11 +1580,7 @@ def main() -> tuple[float, float]:
             surf = font.render(line, True, (240, 240, 245))
             screen.blit(surf, (margin, y0 + i * line_gap))
 
-        sl = hud_r.get("spectrum")
-        if isinstance(sl, list) and len(sl) >= 4:
-            spec4 = [max(0.0, min(1.0, float(sl[j]))) for j in range(4)]
-        else:
-            spec4 = [0.0, 0.0, 0.0, 0.0]
+        spec4 = [0.0, 0.0, 0.0, 0.0]
         for i in range(4):
             lv = spec4[i]
             br, bg, bb = NOTE_RGB[i]
@@ -1496,26 +1608,14 @@ def main() -> tuple[float, float]:
         )
         screen.blit(hint, (margin, HEIGHT - int(round(28 * DISPLAY_SCALE))))
 
-        # 右上: 取り込み音量・リズム指標
-        rms = float(hud_r.get("rms", 0.0))
-        rms_s = float(hud_r.get("rms_smooth", 0.0))
-        bpm = float(hud_r.get("estimated_bpm", 0.0))
-        onset = float(hud_r.get("last_onset", 0.0))
-        dev_w = max(8, int(round(28 * DISPLAY_SCALE)))
-        err_w = max(20, int(round(45 * DISPLAY_SCALE)))
-        dev = str(hud_r.get("device", ""))[:dev_w]
-        err = str(hud_r.get("error", ""))
+        # 右上: 楽曲同期情報
+        chart_left = sum(1 for n in notes if not n.done)
+        yid = current_song.youtube_id if current_song is not None else "-"
         lines_r = [
-            f"RMS {rms:.4f}",
-            f"RMS~ {rms_s:.4f}",
-            f"BPM~ {bpm:.0f}",
-            f"Onset {onset:.4f}",
-            f"{JSON_SNAPSHOT}",
+            f"YouTube ID: {yid}",
+            f"Notes Left: {chart_left}",
+            f"Offset: {time_offset_sec:+.3f}s",
         ]
-        if dev:
-            lines_r.append(dev)
-        if err:
-            lines_r.append(err[:err_w])
         rx = WIDTH - int(round(280 * DISPLAY_SCALE))
         r_top = int(round(8 * DISPLAY_SCALE))
         for i, line in enumerate(lines_r):
@@ -1539,8 +1639,6 @@ def main() -> tuple[float, float]:
         pygame.display.flip()
         clock.tick(FPS)
 
-    if audio_analyzer is not None:
-        audio_analyzer.stop()
     save_game_tune(root, sensitivity, lane_spread, min_volume)
     pygame.quit()
     return (sensitivity, lane_spread, min_volume)
